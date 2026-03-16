@@ -1,4 +1,4 @@
-name: Aplicar renomes de imagens (raiz)
+name: Aplicar renomes de imagens (raiz, com PR)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0  # permite criar branch/PR com histórico adequado
 
       - name: Verificar arquivo de renomes
         run: |
@@ -46,9 +46,10 @@ jobs:
           applied = 0
           skipped_missing = 0
           skipped_same = 0
+          ops = []
 
           def git_mv(src: Path, dst: Path):
-            # Case-only rename: hop temporário evita problema em FS case-insensitive
+            # Case-only rename: hop temporário evita problemas em FS case-insensitive
             if src.name.lower() == dst.name.lower() and src.name != dst.name:
               tmp = dst.with_name(dst.name + ".tmp_case")
               subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
@@ -56,8 +57,13 @@ jobs:
             else:
               subprocess.run(["git","mv","-f",str(src),str(dst)], check=True)
 
-          with RENAMES.open("r", encoding="utf-8") as f:
+          # Lê CSV tolerando BOM (utf-8-sig) e campos com vírgula
+          with RENAMES.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
+            required = {"pasta","origem","destino"}
+            if not required.issubset(set(h.strip() for h in reader.fieldnames or [])):
+              raise SystemExit(f"Headers inválidos no CSV. Esperado: pasta, origem, destino (motivo opcional). Encontrado: {reader.fieldnames}")
+
             for row in reader:
               folder = row["pasta"].strip()
               src_name = row["origem"].strip()
@@ -67,45 +73,41 @@ jobs:
               dst = repo_root / folder / dst_name
 
               if not src.exists():
-                print(f"[MISS] {src}")
+                ops.append(f"[MISS] {src}")
                 skipped_missing += 1
                 continue
               if src == dst:
-                print(f"[SAME] {src}")
+                ops.append(f"[SAME] {src}")
                 skipped_same += 1
                 continue
 
-              print(f"[MOVE] {src} -> {dst}")
+              ops.append(f"[MOVE] {src} -> {dst}")
               if not DRY:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 git_mv(src, dst)
                 applied += 1
 
+          print("\n".join(ops))
           print(f"APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
           PY
 
-      - name: Criar branch e commitar mudanças (só se não for dry-run)
-        if: ${{ inputs.dry_run == 'false' }}
-        run: |
-          BRANCH="auto/renomes-$(date -u +'%Y%m%d-%H%M%S')"
-          git checkout -b "$BRANCH"
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "chore: aplicar renomes de imagens"
-            git push --set-upstream origin "$BRANCH"
-          else
-            echo "Nenhuma alteração para commitar."
-            exit 0
-
+      # Se não for dry-run, crie PR com o que mudou (a action comita e empurra o branch)
       - name: Abrir Pull Request (só se não for dry-run)
         if: ${{ inputs.dry_run == 'false' }}
         uses: peter-evans/create-pull-request@v6
         with:
           title: "Aplicar renomes de imagens"
-          body: "Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`."
-          branch: ${{ github.ref_name }}
+          body: |
+            Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`.
+            Veja o log do job para o plano de renome ([MOVE] = renomear, [MISS] = arquivo não encontrado, [SAME] = já conforme).
+          commit-message: "chore: aplicar renomes de imagens"
+          branch: auto/renomes-${{ github.run_id }}
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
-          draft: false
+
+      - name: Upload do log (sempre)
+        if: always()
+        run: |
+          echo "Status do repositório após a execução:"
+          git status --porcelain=v1
+``
