@@ -1,0 +1,106 @@
+name: Exportar índice de imagens
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # necessário para commitar o CSV (passo opcional no final)
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    env:
+      ROOT_DIR: "."
+      OUTPUT_DIR: "report"
+      OUTPUT_CSV: "report/indice_imagens.csv"
+      # "1" = somente pastas cujo nome é só dígitos (EANs); "0" = todas as pastas de 1º nível
+      ONLY_EAN_DIRS: "0"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gerar CSV (pasta na coluna A, imagens nas colunas seguintes)
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import re
+          from pathlib import Path
+
+          ROOT_DIR = os.environ.get("ROOT_DIR", ".")
+          OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "report")
+          OUTPUT_CSV = os.environ.get("OUTPUT_CSV", "report/indice_imagens.csv")
+          ONLY_EAN_DIRS = os.environ.get("ONLY_EAN_DIRS", "0") == "1"
+
+          IMAGE_EXTS = {".jpg",".jpeg",".png",".webp",".gif",".bmp",".tif",".tiff",".svg"}
+
+          root = Path(ROOT_DIR)
+          out_dir = Path(OUTPUT_DIR)
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          def is_ean_dir(name: str) -> bool:
+            return name.isdigit()
+
+          def natural_key(s: str):
+            # Ordena "1,2,10" corretamente (ordem natural)
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+          # Coleta pastas de primeiro nível
+          folders = []
+          for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if entry.is_dir():
+              if ONLY_EAN_DIRS and not is_ean_dir(entry.name):
+                continue
+              folders.append(entry)
+
+          rows = []
+          max_imgs = 0
+          for folder in folders:
+            imgs = []
+            for f in folder.iterdir():
+              if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                imgs.append(f.name)  # apenas o nome do arquivo
+            imgs.sort(key=natural_key)
+            row = [folder.name] + imgs
+            rows.append(row)
+            max_imgs = max(max_imgs, len(imgs))
+
+          # CSV com header dinâmico
+          header = ["pasta"] + [f"img_{i}" for i in range(1, max_imgs + 1)]
+          with open(OUTPUT_CSV, "w", encoding="utf-8", newline="") as fp:
+            w = csv.writer(fp)
+            w.writerow(header)
+            for r in rows:
+              padded = r + [""] * (1 + max_imgs - len(r))
+              w.writerow(padded)
+
+          print(f"Pastas listadas: {len(rows)}")
+          print(f"Caminho do CSV: {OUTPUT_CSV}")
+          PY
+
+      - name: Upload do CSV como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: indice-imagens
+          path: ${{ env.OUTPUT_CSV }}
+
+      # Opcional: commitar o CSV no repositório
+      - name: Commit CSV no repositório (opcional)
+        run: |
+          if ! git diff --quiet -- ${{ env.OUTPUT_CSV }}; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ${{ env.OUTPUT_CSV }}
+            git commit -m "chore: atualizar índice de imagens ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push
+          else
+            echo "Sem mudanças no CSV, nada para commitar."
+          fi
