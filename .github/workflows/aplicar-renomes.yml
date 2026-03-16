@@ -97,36 +97,16 @@ jobs:
           print(f"ROWS_LIDAS={rows_lidas} PLANNED={planned} APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
           PY
 
-      - name: Detectar mudanças no workspace (debug)
-        run: |
-          echo "=== git status (antes) ==="
-          git status --porcelain=v1 || true
-
-      - name: Criar branch, commitar e enviar (somente se não for dry-run)
-        if: ${{ inputs.dry_run == false }}
-        run: |
-          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git checkout -b "${BRANCH_NAME}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "Nenhuma alteração para commitar."
-            exit 0
-          fi
-          git commit -m "chore: aplicar renomes de imagens"
-          git push --set-upstream origin "${BRANCH_NAME}"
-
       - name: Abrir Pull Request (só se não for dry-run)
         if: ${{ inputs.dry_run == false }}
         uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ env.BRANCH_NAME }}
+          base: ${{ github.event.repository.default_branch }}
+          commit-message: "chore: aplicar renomes de imagens"
           title: "Aplicar renomes de imagens"
           body: |
             Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`.
             Logs do job mostram o plano em "Aplicar renomes (ou simular)".
-          commit-message: "chore: aplicar renomes de imagens"
-          branch: ${{ env.BRANCH_NAME }}
-          base: ${{ github.event.repository.default_branch }}
           delete-branch: true
-          token: ${{ secrets.GITHUB_TOKEN }}
