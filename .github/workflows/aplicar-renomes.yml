@@ -24,32 +24,35 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # necessário para criar branch/PR com histórico adequado
+          fetch-depth: 0  # histórico para criar branch/PR
 
-      - name: Verificar arquivo de renomes
+      - name: Verificar arquivo de renomes (exibe cabeçalho)
         run: |
           test -f "${{ inputs.renames_path }}" || (echo "Arquivo não encontrado: ${{ inputs.renames_path }}" && exit 1)
           echo "Usando: ${{ inputs.renames_path }}"
-          sed -n '1,8p' "${{ inputs.renames_path }}"
+          echo "Tamanho (bytes):"
+          wc -c "${{ inputs.renames_path }}" || true
+          echo "Total de linhas:"
+          wc -l "${{ inputs.renames_path }}" || true
+          echo "Primeiras linhas:"
+          sed -n '1,12p' "${{ inputs.renames_path }}" || true
 
       - name: Aplicar renomes (ou simular)
         id: run
         run: |
           python - <<'PY'
-          import csv, subprocess
+          import csv, subprocess, sys
           from pathlib import Path
 
           RENAMES = Path("${{ inputs.renames_path }}")
           DRY = "${{ inputs.dry_run }}".lower() == "true"
 
           repo_root = Path(".").resolve()
-          applied = 0
-          skipped_missing = 0
-          skipped_same = 0
+          applied = skipped_missing = skipped_same = planned = rows_lidas = 0
           ops = []
 
           def git_mv(src: Path, dst: Path):
-            # Renome apenas por diferença de caixa: hop temporário
+            # Case-only rename -> hop temporário
             if src.name.lower() == dst.name.lower() and src.name != dst.name:
               tmp = dst.with_name(dst.name + ".tmp_case")
               subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
@@ -57,14 +60,17 @@ jobs:
             else:
               subprocess.run(["git","mv","-f",str(src),str(dst)], check=True)
 
-          # Lê CSV tolerando BOM e vírgulas
           with RENAMES.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
+            headers = reader.fieldnames or []
+            print(f"HEADERS_ENCONTRADOS={headers}")
             required = {"pasta","origem","destino"}
-            if not required.issubset(set(h.strip() for h in (reader.fieldnames or []))):
-              raise SystemExit(f"Headers inválidos no CSV. Esperado: pasta, origem, destino (motivo opcional). Encontrado: {reader.fieldnames}")
+            if not required.issubset({h.strip() for h in headers}):
+              print(f"ERRO_HEADERS: esperado {sorted(required)}, encontrado {headers}")
+              sys.exit(1)
 
             for row in reader:
+              rows_lidas += 1
               folder = row["pasta"].strip()
               src_name = row["origem"].strip()
               dst_name = row["destino"].strip()
@@ -81,17 +87,17 @@ jobs:
                 skipped_same += 1
                 continue
 
+              planned += 1
               ops.append(f"[MOVE] {src} -> {dst}")
               if not DRY:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 git_mv(src, dst)
                 applied += 1
 
-          print("\n".join(ops))
-          print(f"APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
+          print("\n".join(ops[:150]))
+          print(f"ROWS_LIDAS={rows_lidas} PLANNED={planned} APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
           PY
 
-      # (Opcional) Detectar se houve mudanças para evitar PR vazio
       - name: Detectar mudanças no workspace
         id: changes
         run: |
@@ -100,6 +106,7 @@ jobs:
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
+          echo "changed=${{ steps.changes.outputs.changed }}"
 
       - name: Abrir Pull Request (só se não for dry-run)
         if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
@@ -108,7 +115,7 @@ jobs:
           title: "Aplicar renomes de imagens"
           body: |
             Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`.
-            Log do plano: [MOVE]=renomear, [MISS]=arquivo não encontrado, [SAME]=já conforme.
+            Log do plano: vide step "Aplicar renomes (ou simular)".
           commit-message: "chore: aplicar renomes de imagens"
           branch: auto/renomes-${{ github.run_id }}
           base: ${{ github.event.repository.default_branch }}
