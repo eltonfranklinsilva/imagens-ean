@@ -1,0 +1,105 @@
+name: Aplicar renomes de imagens (raiz, com PR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      renames_path:
+        description: 'Caminho do CSV de renomes'
+        required: true
+        default: 'renomes.csv'
+      dry_run:
+        description: 'Apenas simular (não altera arquivos)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply-renames:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # para criar branch e PR com histórico
+
+      - name: Verificar arquivo de renomes
+        run: |
+          test -f "${{ inputs.renames_path }}" || (echo "Arquivo não encontrado: ${{ inputs.renames_path }}" && exit 1)
+          echo "Usando: ${{ inputs.renames_path }}"
+          sed -n '1,8p' "${{ inputs.renames_path }}"
+
+      - name: Aplicar renomes (ou simular)
+        id: run
+        run: |
+          python - <<'PY'
+          import csv, subprocess
+          from pathlib import Path
+
+          RENAMES = Path("${{ inputs.renames_path }}")
+          DRY = "${{ inputs.dry_run }}".lower() == "true"
+
+          repo_root = Path(".").resolve()
+          applied = 0
+          skipped_missing = 0
+          skipped_same = 0
+          ops = []
+
+          def git_mv(src: Path, dst: Path):
+            # Case-only rename -> hop temporário
+            if src.name.lower() == dst.name.lower() and src.name != dst.name:
+              tmp = dst.with_name(dst.name + ".tmp_case")
+              subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
+              subprocess.run(["git","mv","-f",str(tmp),str(dst)], check=True)
+            else:
+              subprocess.run(["git","mv","-f",str(src),str(dst)], check=True)
+
+          # CSV com BOM e vírgulas em segurança
+          with RENAMES.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            required = {"pasta","origem","destino"}
+            if not required.issubset(set(h.strip() for h in (reader.fieldnames or []))):
+              raise SystemExit(f"Headers inválidos no CSV. Esperado: pasta, origem, destino (motivo opcional). Encontrado: {reader.fieldnames}")
+
+            for row in reader:
+              folder = row["pasta"].strip()
+              src_name = row["origem"].strip()
+              dst_name = row["destino"].strip()
+
+              src = repo_root / folder / src_name
+              dst = repo_root / folder / dst_name
+
+              if not src.exists():
+                ops.append(f"[MISS] {src}")
+                skipped_missing += 1
+                continue
+              if src == dst:
+                ops.append(f"[SAME] {src}")
+                skipped_same += 1
+                continue
+
+              ops.append(f"[MOVE] {src} -> {dst}")
+              if not DRY:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                git_mv(src, dst)
+                applied += 1
+
+          print("\\n".join(ops))
+          print(f"APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
+          PY
+
+      - name: Abrir Pull Request (só se não for dry-run)
+        if: ${{ inputs.dry_run == 'false' }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: "Aplicar renomes de imagens"
+          body: |
+            Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`.
+            Log do plano: [MOVE]=renomear, [MISS]=arquivo não encontrado, [SAME]=já conforme.
+          commit-message: "chore: aplicar renomes de imagens"
+          branch: auto/renomes-${{ github.run_id }}
+          base: ${{ github.event.repository.default_branch }}
+          delete-branch: true
