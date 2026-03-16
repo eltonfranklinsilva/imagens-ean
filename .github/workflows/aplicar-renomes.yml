@@ -27,8 +27,8 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0            # necessário para criar branch/PR com histórico
-          persist-credentials: true # mantém GITHUB_TOKEN no remote "origin"
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Verificar arquivo de renomes (exibe cabeçalho)
         run: |
@@ -53,7 +53,7 @@ jobs:
           ops = []
 
           def git_mv(src: Path, dst: Path):
-            # Case-only rename -> hop temporário evita cache case-insensitive
+            # Case-only rename -> hop temporário
             if src.name.lower() == dst.name.lower() and src.name != dst.name:
               tmp = dst.with_name(dst.name + ".tmp_case")
               subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
@@ -95,15 +95,15 @@ jobs:
                 git_mv(src, dst)
                 applied += 1
 
-          print("\n".join(ops[:150]))  # limita saída
+          print("\n".join(ops[:150]))
           print(f"ROWS_LIDAS={rows_lidas} PLANNED={planned} APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
-
-          # Retorna código de saída 0 sempre, para permitir prosseguir e inspecionar mudanças
           PY
 
       - name: Detectar mudanças no workspace
         id: changes
         run: |
+          echo "=== git status (antes) ==="
+          git status --porcelain=v1 || true
           if git status --porcelain | grep .; then
             echo "changed=true" >> $GITHUB_OUTPUT
           else
@@ -111,32 +111,22 @@ jobs:
           fi
           echo "changed=${{ steps.changes.outputs.changed }}"
 
-      # Se não for dry-run e houve mudanças, criamos um branch, commit e push manualmente
       - name: Criar branch, commitar e enviar (somente se não for dry-run e houver mudanças)
         if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
         run: |
-          # Garante que o push usará o GITHUB_TOKEN
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-
-          # Cria e muda para o branch de PR
           git checkout -b "${BRANCH_NAME}"
-
-          # Configura identidade do bot
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Adiciona e commita o que mudou
           git add -A
           if git diff --cached --quiet; then
             echo "Nenhuma alteração para commitar."
             exit 0
           fi
           git commit -m "chore: aplicar renomes de imagens"
-
-          # Envia o branch para o origin
           git push --set-upstream origin "${BRANCH_NAME}"
 
-      - name: Abrir Pull Request (só se não for dry-run e houver branch com mudanças)
+      - name: Abrir Pull Request (só se não for dry-run e houve push)
         if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
         uses: peter-evans/create-pull-request@v6
         with:
@@ -145,10 +135,10 @@ jobs:
             Este PR aplica os renomes definidos em `${{ inputs.renames_path }}`.
             Logs do job mostram o plano em "Aplicar renomes (ou simular)".
           commit-message: "chore: aplicar renomes de imagens"
-          branch: ${{ env.BRANCH_NAME }}                       # usa o branch já pushado
+          branch: ${{ env.BRANCH_NAME }}
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
-          token: ${{ secrets.GITHUB_TOKEN }}                   # usa explicitamente o token
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Aviso quando não há mudanças (só se não for dry-run)
         if: ${{ inputs.dry_run == false && steps.changes.outputs.changed != 'true' }}
