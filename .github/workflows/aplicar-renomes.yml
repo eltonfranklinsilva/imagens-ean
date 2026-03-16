@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # para criar branch e PR com histórico
+          fetch-depth: 0  # necessário para criar branch/PR com histórico adequado
 
       - name: Verificar arquivo de renomes
         run: |
@@ -49,7 +49,7 @@ jobs:
           ops = []
 
           def git_mv(src: Path, dst: Path):
-            # Case-only rename -> hop temporário
+            # Renome apenas por diferença de caixa: hop temporário
             if src.name.lower() == dst.name.lower() and src.name != dst.name:
               tmp = dst.with_name(dst.name + ".tmp_case")
               subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
@@ -57,7 +57,7 @@ jobs:
             else:
               subprocess.run(["git","mv","-f",str(src),str(dst)], check=True)
 
-          # CSV com BOM e vírgulas em segurança
+          # Lê CSV tolerando BOM e vírgulas
           with RENAMES.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             required = {"pasta","origem","destino"}
@@ -87,12 +87,22 @@ jobs:
                 git_mv(src, dst)
                 applied += 1
 
-          print("\\n".join(ops))
+          print("\n".join(ops))
           print(f"APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
           PY
 
+      # (Opcional) Detectar se houve mudanças para evitar PR vazio
+      - name: Detectar mudanças no workspace
+        id: changes
+        run: |
+          if git status --porcelain | grep .; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Abrir Pull Request (só se não for dry-run)
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
         uses: peter-evans/create-pull-request@v6
         with:
           title: "Aplicar renomes de imagens"
@@ -103,3 +113,7 @@ jobs:
           branch: auto/renomes-${{ github.run_id }}
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
+
+      - name: Aviso quando não há mudanças (só se não for dry-run)
+        if: ${{ inputs.dry_run == false && steps.changes.outputs.changed != 'true' }}
+        run: echo "Nenhuma alteração encontrada para abrir PR."
