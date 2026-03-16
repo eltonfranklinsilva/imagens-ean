@@ -110,4 +110,3 @@ jobs:
         run: |
           echo "Status do repositório após a execução:"
           git status --porcelain=v1
-``
