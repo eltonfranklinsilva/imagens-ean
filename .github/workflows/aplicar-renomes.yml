@@ -17,9 +17,8 @@ permissions:
   pull-requests: write
 
 jobs:
-  apply-renames:
+  apply-renomes:
     runs-on: ubuntu-latest
-
     env:
       BRANCH_NAME: auto/renomes-${{ github.run_id }}
 
@@ -53,7 +52,6 @@ jobs:
           ops = []
 
           def git_mv(src: Path, dst: Path):
-            # Case-only rename -> hop temporário
             if src.name.lower() == dst.name.lower() and src.name != dst.name:
               tmp = dst.with_name(dst.name + ".tmp_case")
               subprocess.run(["git","mv","-f",str(src),str(tmp)], check=True)
@@ -99,20 +97,13 @@ jobs:
           print(f"ROWS_LIDAS={rows_lidas} PLANNED={planned} APPLIED={applied} MISSING={skipped_missing} SAME={skipped_same}")
           PY
 
-      - name: Detectar mudanças no workspace
-        id: changes
+      - name: Detectar mudanças no workspace (debug)
         run: |
           echo "=== git status (antes) ==="
           git status --porcelain=v1 || true
-          if git status --porcelain | grep .; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-          echo "changed=${{ steps.changes.outputs.changed }}"
 
-      - name: Criar branch, commitar e enviar (somente se não for dry-run e houver mudanças)
-        if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
+      - name: Criar branch, commitar e enviar (somente se não for dry-run)
+        if: ${{ inputs.dry_run == false }}
         run: |
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git checkout -b "${BRANCH_NAME}"
@@ -126,8 +117,8 @@ jobs:
           git commit -m "chore: aplicar renomes de imagens"
           git push --set-upstream origin "${BRANCH_NAME}"
 
-      - name: Abrir Pull Request (só se não for dry-run e houve push)
-        if: ${{ inputs.dry_run == false && steps.changes.outputs.changed == 'true' }}
+      - name: Abrir Pull Request (só se não for dry-run)
+        if: ${{ inputs.dry_run == false }}
         uses: peter-evans/create-pull-request@v6
         with:
           title: "Aplicar renomes de imagens"
@@ -139,7 +130,3 @@ jobs:
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Aviso quando não há mudanças (só se não for dry-run)
-        if: ${{ inputs.dry_run == false && steps.changes.outputs.changed != 'true' }}
-        run: echo "Nenhuma alteração encontrada para abrir PR."
